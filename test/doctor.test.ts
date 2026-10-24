@@ -69,7 +69,7 @@ import {
 // ─── fixture builders ────────────────────────────────────────────────────────
 
 function ev<T>(value: T, source = "pi:effective", plannable = true) {
-  return { value, source, confidence: "authoritative" as const, plannable };
+  return { value, source, plannable };
 }
 
 /** Build an EffectiveSnapshot from raw model objects (one list per provider). */

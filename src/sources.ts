@@ -1078,6 +1078,7 @@ function asNonNegLimit(v: unknown): number | undefined {
 function uniqueNumbers(arr: number[]): number[] {
   return [...new Set(arr)].sort((a, b) => a - b);
 }
+
 // ─── Thinking levels (cross-provider resolution) ─────────────────────────────
 
 /**

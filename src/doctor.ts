@@ -33,7 +33,7 @@ import {
   isCompositePath,
   allowlistedSubfields,
 } from "./types.ts";
-import { asString, evidence, isObject, messageOf } from "./util.ts";
+import { asString, isObject, messageOf } from "./util.ts";
 import type {
   ApplyResult,
   Diagnosis,
@@ -181,19 +181,19 @@ export function diagnoseManagedDrift(
       });
     }
     for (const { path } of MODEL_FIELD_KEYS) {
-      const evidence = evidenceOf(nm, path);
-      if (!evidence) continue;
+      const ev = evidenceOf(nm, path);
+      if (!ev) continue;
       const current = (entry as Record<string, unknown>)[path];
-      if (!evidence.plannable) {
+      if (!ev.plannable) {
         findings.push({
           provider, modelId: entry.id, severity: "warning", code: "ambiguity",
-          message: `${path} source data is ambiguous/conditional${evidence.note ? ": " + evidence.note : ""}; not auto-applied`,
+          message: `${path} source data is ambiguous/conditional${ev.note ? ": " + ev.note : ""}; not auto-applied`,
           ref: `models.providers.${provider}.models[${entry.id}].${path}`,
         });
-      } else if (!canonicalEqual(current, evidence.value)) {
+      } else if (!canonicalEqual(current, ev.value)) {
         findings.push({
           provider, modelId: entry.id, severity: "info", code: "drift",
-          message: `${path} differs from source (${evidence.source}): ${brief(current)} -> ${brief(evidence.value)}`,
+          message: `${path} differs from source (${ev.source}): ${brief(current)} -> ${brief(ev.value)}`,
           ref: `models.providers.${provider}.models[${entry.id}].${path}`,
         });
       }
@@ -237,13 +237,13 @@ export function diagnoseManagedDrift(
       const nm = effModels.find((m) => m.id === entry.id);
       if (!nm) continue;
       for (const { path } of MODEL_FIELD_KEYS) {
-        const evidence = evidenceOf(nm, path);
-        if (!evidence || !evidence.plannable) continue;
+        const ev = evidenceOf(nm, path);
+        if (!ev || !ev.plannable) continue;
         const current = (entry as Record<string, unknown>)[path];
-        if (!canonicalEqual(current, evidence.value)) {
+        if (!canonicalEqual(current, ev.value)) {
           findings.push({
             provider, modelId: entry.id, severity: "info", code: "effective_drift",
-            message: `${path} differs from effective pi catalog (${evidence.source}): ${brief(current)} -> ${brief(evidence.value)}`,
+            message: `${path} differs from effective pi catalog (${ev.source}): ${brief(current)} -> ${brief(ev.value)}`,
             ref: `models.providers.${provider}.models[${entry.id}].${path}`,
           });
         }
@@ -1024,7 +1024,7 @@ export function reconcileAll(
     let added = 0, updated = 0, skipped = 0, unchanged = 0;
 
     // UPDATE existing managed entries from the source. Thinking levels are
-    // resolved cross-provider (openrouter efforts > hyper; see thinking.ts)
+    // resolved cross-provider (openrouter efforts > hyper; see sources.ts)
     // because the per-provider sources do not publish effort maps.
     for (const entry of existing) {
       const nmRaw = srcOk ? source!.models.find((m) => m.id === entry.id) : undefined;

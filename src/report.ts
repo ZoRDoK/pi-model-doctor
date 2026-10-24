@@ -38,13 +38,6 @@ export function reportSanitized(text: string): string {
   return text.split("\n").map(sanitize).join("\n");
 }
 
-/** Render a value for display. Only allowlisted metadata is passed here. */
-function renderValue(value: unknown): string {
-  if (value === undefined) return "(absent)";
-  if (value === null) return "(null)";
-  return sanitize(JSON.stringify(value));
-}
-
 /** Escape for a Markdown table cell. */
 function mdCell(text: string): string {
   return sanitize(text).replace(/\|/g, "\\|");
@@ -201,5 +194,3 @@ export async function boundReport(safeText: string): Promise<{ shown: string }> 
 
   return { shown: safeText.slice(0, MAX_REPORT_CHARS) + marker + `; full sanitized report written to ${filePath} (mode 0600)]` };
 }
-
-export const __reportInternals = { renderValue };

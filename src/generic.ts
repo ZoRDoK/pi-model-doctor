@@ -129,7 +129,6 @@ interface ListedModel {
   input?: ("text" | "image")[];
 }
 
-/** Positive finite number or undefined (listings often carry strings/null). */
 /** Limits an OpenAI-compatible listing MAY publish. Only unambiguous field
  *  names are read: a bare `max_tokens` describes nothing specific enough to
  *  trust as an output ceiling and is ignored. */

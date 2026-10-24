@@ -12,7 +12,7 @@ import { agentDir, defaultPaths } from "./paths.ts";
 import { boundReport, buildResultReport, MAX_REPORT_CHARS, reportSanitized, sanitize } from "./report.ts";
 import { MANAGED_PROVIDERS } from "./types.ts";
 import type { EffectiveSnapshot, FetchFn, NormalizedModel } from "./types.ts";
-import { evidence } from "./util.ts";
+import { evidence, messageOf } from "./util.ts";
 
 // ─── Pi registry adapters ────────────────────────────────────────────────────
 
@@ -177,10 +177,6 @@ function helpText(): string {
     "settings.json, auth.json and models-store.json are read-only, and provider",
     "credentials, base URLs and headers are never changed or echoed.",
   ].join("\n");
-}
-
-function messageOf(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
 
 /** Exported for tests only; not part of the pi command surface. */

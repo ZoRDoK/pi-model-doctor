@@ -326,4 +326,3 @@ function buffersEqual(a: Uint8Array, b: Uint8Array): boolean {
   return diff === 0;
 }
 
-
