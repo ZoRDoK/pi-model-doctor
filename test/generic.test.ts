@@ -9,9 +9,9 @@ import {
   readAuthKeys,
   genericCandidates,
   syncGenericProviders,
-} from "../generic.ts";
-import { runReconcile } from "../doctor.ts";
-import type { ModelsConfig, FetchFn, FetchInit, FetchResponse } from "../types.ts";
+} from "../src/generic.ts";
+import { runReconcile } from "../src/doctor.ts";
+import type { ModelsConfig, FetchFn, FetchInit, FetchResponse } from "../src/types.ts";
 
 // ─── listingUrl ───────────────────────────────────────────────────────────────
 

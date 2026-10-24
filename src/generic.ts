@@ -1,20 +1,11 @@
 /**
- * Generic (non-managed) provider sync.
+ * Sync for every provider without dedicated doctor rules (OpenAI-compatible,
+ * Anthropic, Gemini), using the transport and credentials already configured.
  *
- * Every models.json provider WITHOUT dedicated doctor rules is reconciled by
- * wire protocol (OpenAI-compatible / Anthropic / Gemini), using the baseUrl and
- * credentials the user already configured:
- *
- *  - the live /models listing decides which model ids exist;
- *  - ids Pi already serves from its own catalog are never duplicated;
- *  - genuinely new ids are ADDED with inherited transport (api/baseUrl) and
- *    whatever metadata the protocol publishes (Gemini limits, display names) —
- *    only when the listing publishes BOTH limits; a model whose context window
- *    or max output is unknown is skipped, never written with guessed numbers;
- *  - existing entries are never modified and nothing is ever removed;
- *  - providers not configured in pi's effective registry are skipped;
- *  - secrets (api keys) are used for the request only — never logged, never
- *    copied into findings, reports, or operations.
+ * The live /models listing decides which ids exist. Ids pi already serves are
+ * never duplicated; a genuinely new id is added only when the listing publishes
+ * both limits. Existing entries are never rewritten, nothing is removed, and the
+ * api key is used for the request only — never logged or copied anywhere.
  */
 import type {
   FetchFn,
@@ -28,6 +19,7 @@ import type {
   ProviderEntry,
 } from "./types.ts";
 import { isManagedProvider, protocolForApi } from "./types.ts";
+import { asPositiveNumber, asString, evidence, isObject } from "./util.ts";
 import { makeSkipped, missingLimitReason, upsertNewModelOps, type ModelResult, type ProviderTotal } from "./doctor.ts";
 
 const GENERIC_TIMEOUT_MS = 15_000;
@@ -39,7 +31,6 @@ interface GenericCandidate {
   readonly baseUrl: string;
   readonly api: string;
   readonly apiKey: string | undefined;
-  readonly displayUrl: string;
 }
 
 /** Read plain API keys from auth.json ({provider:{key}}). OAuth entries are
@@ -52,13 +43,16 @@ export function readAuthKeys(text: string | undefined): Record<string, string> {
   } catch {
     return {};
   }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-  const out: Record<string, string> = {};
-  for (const [provider, value] of Object.entries(parsed as Record<string, unknown>)) {
-    const key = (value as { key?: unknown } | undefined)?.key;
-    if (typeof key === "string" && key.length > 0) out[provider] = key;
+  if (!isObject(parsed)) return {};
+
+  const keys: Record<string, string> = {};
+
+  for (const [provider, value] of Object.entries(parsed)) {
+    const key = isObject(value) ? asString(value.key) : undefined;
+    if (key !== undefined) keys[provider] = key;
   }
-  return out;
+
+  return keys;
 }
 
 function resolveApiKey(provider: string, entry: ProviderEntry, authKeys: Record<string, string>): string | undefined {
@@ -122,7 +116,6 @@ export function genericCandidates(
       baseUrl,
       api: api as string,
       apiKey: resolveApiKey(provider, entry, authKeys),
-      displayUrl: listingUrl(protocol, baseUrl).split("?")[0] ?? "",
     });
   }
   return out;
@@ -137,17 +130,13 @@ interface ListedModel {
 }
 
 /** Positive finite number or undefined (listings often carry strings/null). */
-function positiveNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
-}
-
 /** Limits an OpenAI-compatible listing MAY publish. Only unambiguous field
  *  names are read: a bare `max_tokens` describes nothing specific enough to
  *  trust as an output ceiling and is ignored. */
 function listedLimits(row: Record<string, unknown>): { contextWindow?: number; maxTokens?: number } {
   return {
-    contextWindow: positiveNumber(row.context_length) ?? positiveNumber(row.context_window) ?? positiveNumber(row.max_context_length),
-    maxTokens: positiveNumber(row.max_completion_tokens) ?? positiveNumber(row.max_output_tokens),
+    contextWindow: asPositiveNumber(row.context_length) ?? asPositiveNumber(row.context_window) ?? asPositiveNumber(row.max_context_length),
+    maxTokens: asPositiveNumber(row.max_completion_tokens) ?? asPositiveNumber(row.max_output_tokens),
   };
 }
 
@@ -247,19 +236,14 @@ async function fetchListing(
 
 function toNormalized(candidate: GenericCandidate, m: ListedModel): NormalizedModel {
   const source = candidate.provider + ":models";
-  const ev = <T,>(value: T): { value: T; source: string; confidence: "reported"; plannable: boolean } => ({
-    value,
-    source,
-    confidence: "reported",
-    plannable: true,
-  });
   const nm: NormalizedModel = { provider: candidate.provider, id: m.id };
-  nm.name = ev(m.name ?? m.id);
-  nm.api = ev(candidate.api);
-  nm.baseUrl = ev(candidate.baseUrl);
-  if (m.contextWindow !== undefined) nm.contextWindow = ev(m.contextWindow);
-  if (m.maxTokens !== undefined) nm.maxTokens = ev(m.maxTokens);
-  if (m.input !== undefined) nm.input = ev(m.input);
+
+  nm.name = evidence(m.name ?? m.id, source);
+  nm.api = evidence(candidate.api, source);
+  nm.baseUrl = evidence(candidate.baseUrl, source);
+  if (m.contextWindow !== undefined) nm.contextWindow = evidence(m.contextWindow, source);
+  if (m.maxTokens !== undefined) nm.maxTokens = evidence(m.maxTokens, source);
+  if (m.input !== undefined) nm.input = evidence(m.input, source);
   return nm;
 }
 

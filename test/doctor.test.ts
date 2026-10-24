@@ -11,7 +11,7 @@ import { readFile, stat, writeFile, mkdir } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const SRC_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
+const SRC_DIR = join(dirname(dirname(fileURLToPath(import.meta.url))), "src");
 
 import {
   applyOperationsToClone,
@@ -33,9 +33,9 @@ import {
   validateModelsConfigText,
   type ParsedTarget,
   type RefCatalog,
-} from "../doctor.ts";
-import { fetchSource, nowIso, normalizeHyperList, normalizeModelsDev, normalizeOpenRouterList } from "../sources.ts";
-import { readRaw, serializeConfig } from "../storage.ts";
+} from "../src/doctor.ts";
+import { fetchSource, nowIso, normalizeHyperList, normalizeModelsDev, normalizeOpenRouterList } from "../src/sources.ts";
+import { readRaw, serializeConfig } from "../src/storage.ts";
 import type {
   Diagnosis,
   DoctorPaths,
@@ -49,8 +49,8 @@ import type {
   NormalizedCost,
   NormalizedModel,
   SourceResult,
-} from "../types.ts";
-import factory, { __internals, sanitize } from "../index.ts";
+} from "../src/types.ts";
+import factory, { __internals, sanitize } from "../src/index.ts";
 import {
   effectiveGoFixture,
   findSecrets,
@@ -422,7 +422,7 @@ describe("buildPlanFromSources + applyPlan", () => {
   test("empty plan (0 operations) writes nothing and creates no backup", async () => {
     const { paths, effective, fetch } = await setupPlanEnv();
     const before = await readRaw(paths.modelsPath);
-    const plan: import("../types.ts").PendingPlan = {
+    const plan: import("../src/types.ts").PendingPlan = {
       id: "empty",
       createdAt: nowIso(),
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
@@ -1176,7 +1176,7 @@ describe("regression: applyPlan pre-write schema gate refuses invalid content", 
     });
     await writeJson(paths.settingsPath, {});
     const before = (await readRaw(paths.modelsPath)).hash;
-    const plan: import("../types.ts").PendingPlan = {
+    const plan: import("../src/types.ts").PendingPlan = {
       id: "p", createdAt: nowIso(), expiresAt: new Date(Date.now() + 60_000).toISOString(), target: "",
       modelsHash: before, settingsHash: (await readRaw(paths.settingsPath)).hash, sourceDigests: {}, effectiveDigest: canonicalEffectiveDigest(effectiveFromRaw({ openrouter: [], opencode: [], "opencode-go": [] })),
       operations: [{ provider: "openrouter", modelId: "good", path: "name", before: "Good OLD", after: "Good NEW", source: "src", reason: "src" }],

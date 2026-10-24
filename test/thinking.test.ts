@@ -6,15 +6,15 @@
 import { describe, test } from "node:test";
 import { strictEqual, ok as assertOk, deepStrictEqual } from "node:assert/strict";
 
-import { enrichThinkingLevels, resolveThinkingLevels } from "../thinking.ts";
-import { normalizeHyperList, normalizeOpenRouterList } from "../sources.ts";
+import { enrichThinkingLevels, resolveThinkingLevels } from "../src/sources.ts";
+import { normalizeHyperList, normalizeOpenRouterList } from "../src/sources.ts";
 import type {
   Diagnosis,
   Evidence,
   ManagedProvider,
   NormalizedModel,
   SourceResult,
-} from "../types.ts";
+} from "../src/types.ts";
 
 const LOW_HIGH_MAX = ["low", "high", "max"] as const;
 
@@ -174,7 +174,6 @@ describe("enrichThinkingLevels", () => {
     const builtinMap: Evidence<Readonly<Record<string, string | null>>> = {
       value: { medium: "high" },
       source: "pi:effective",
-      confidence: "authoritative",
       plannable: true,
     };
     const model: NormalizedModel = { provider: "opencode-go", id: "kimi-k3", thinkingLevelMap: builtinMap };
@@ -186,7 +185,7 @@ describe("enrichThinkingLevels", () => {
     const model: NormalizedModel = {
       provider: "opencode",
       id: "kimi-k3",
-      reasoning: { value: true, source: "models.dev:opencode", confidence: "reported", plannable: true },
+      reasoning: { value: true, source: "models.dev:opencode", plannable: true },
     };
     const enriched = enrichThinkingLevels("opencode", model, agreed);
     strictEqual(enriched.reasoning!.source, "models.dev:opencode", "original reasoning provenance kept");

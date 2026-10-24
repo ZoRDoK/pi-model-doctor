@@ -18,8 +18,8 @@ import {
   sha256Hex,
   MAX_RESPONSE_BYTES,
   SOURCE_ENDPOINTS,
-} from "../sources.ts";
-import type { NormalizedModel } from "../types.ts";
+} from "../src/sources.ts";
+import type { NormalizedModel } from "../src/types.ts";
 import {
   mockFetch,
   openRouterListFixture,
@@ -325,7 +325,7 @@ describe("fetchSource dispatcher", () => {
     });
     // Reuse refineOpenRouterModel via fetchSource + refine path indirectly:
     // construct a base model and refine it.
-    const { refineOpenRouterModel } = await import("../sources.ts");
+    const { refineOpenRouterModel } = await import("../src/sources.ts");
     const base = normalizeOpenRouterList(JSON.parse(openRouterListFixture())).find((m) => m.id === "openai/gpt-test")!;
     const refined = await refineOpenRouterModel(
       base,
@@ -561,7 +561,7 @@ describe("regression: opencode-go live catalog (real provider, not check-only)",
   test("the stale 404 URL must NEVER appear; the live Go URL is the source", () => {
     strictEqual(SOURCE_ENDPOINTS["opencode-go"], "https://opencode.ai/zen/go/v1/models");
     // The old wrong URL from stale research must be gone entirely from source.
-    const src = readFileSync("sources.ts", "utf8");
+    const src = readFileSync("src/sources.ts", "utf8");
     strictEqual(src.includes("https://opencode.ai/go/v1/models"), false, "stale /go/v1 URL removed");
     strictEqual(src.includes("check-only"), false, "check-only wording removed");
   });

@@ -1,33 +1,24 @@
 /**
- * Official-source adapters for model-doctor.
+ * Official-source adapters: fetch, validate and normalize the public catalogs.
  *
- * Design rules (from the approved plan):
- *  - Only hardcoded HTTPS hosts; redirects forbidden (redirect:"error").
- *  - No auth headers: these metadata endpoints are public.
- *  - AbortSignal + timeout + response-size limit + content-type/schema checks.
- *  - Missing field != zero/default; ambiguity blocks the affected patch.
- *  - OpenRouter aliases are informational, never rewritten to canonical id.
- *  - models.dev has no OpenCode routing/pricing; it is canonical metadata only,
- *    matched to pi opencode models by unique slug suffix.
- *  - opencode-go and opencode (zen) are both LIVE public catalogs
- *    (https://opencode.ai/zen/go/v1/models and /zen/v1/models): each is the
- *    AVAILABILITY authority for its own provider, enriched with models.dev
- *    metadata. The two catalogs must never be confused (distinct providers).
- *
- * All paths/functions are injectable via the FetchFn option so tests use a fully
- * mocked transport and never touch the network.
+ * Rules: allowlisted https hosts only, redirects refused, no auth headers,
+ * timeout + size limit + schema checks. A missing field stays unknown; ambiguous
+ * data is reported but never planned. Zen and Go are separate live catalogs and
+ * each is the availability authority for its provider; models.dev only enriches
+ * them with metadata.
  */
 import { createHash } from "node:crypto";
 
+import { asString, evidence, isObject, messageOf } from "./util.ts";
 import type {
-  Confidence,
+  Diagnosis,
   Evidence,
   FetchFn,
   FetchResponse,
+  ManagedProvider,
   NormalizedCost,
   NormalizedModel,
   OfficialSourceId,
-  ManagedProvider,
   SourceResult,
 } from "./types.ts";
 
@@ -252,23 +243,6 @@ function concatBytes(chunks: Uint8Array[], total: number): Uint8Array {
   return out;
 }
 
-function messageOf(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  return String(err);
-}
-
-function ev<T>(
-  value: T,
-  source: string,
-  confidence: Confidence,
-  plannable: boolean,
-  note?: string,
-): Evidence<T> {
-  return note !== undefined
-    ? { value, source, confidence, plannable, note }
-    : { value, source, confidence, plannable };
-}
-
 // ─── OpenRouter normalization ────────────────────────────────────────────────
 
 interface OpenRouterModel {
@@ -379,15 +353,15 @@ function normalizeOpenRouterModel(
   // Informational creation timestamp (never patched): used by the retire-cutoff.
   const created = asStrictNumber(model.created);
   if (created !== undefined && created > 0) out.createdMs = created * 1000;
-  if (name !== undefined) out.name = ev(name, source, "authoritative", true);
+  if (name !== undefined) out.name = evidence(name, source);
   if (reasoning !== undefined) out.reasoning = reasoning;
   if (thinkingLevelMap !== undefined) out.thinkingLevelMap = thinkingLevelMap;
   if (input !== undefined) out.input = input;
   if (contextWindow !== undefined) {
-    out.contextWindow = ev(contextWindow, source, "authoritative", true);
+    out.contextWindow = evidence(contextWindow, source);
   }
   if (maxTokens !== undefined) {
-    out.maxTokens = ev(maxTokens, source, "reported", true);
+    out.maxTokens = evidence(maxTokens, source);
   }
   if (cost !== undefined) out.cost = cost;
   if (aliases.length > 0) out.aliases = aliases;
@@ -406,7 +380,7 @@ function readOpenRouterReasoning(
   const hasField =
     model.reasoning !== null && model.reasoning !== undefined;
   if (hasParam || hasField) {
-    return ev(true, source, "reported", true);
+    return evidence(true, source);
   }
   return undefined; // unknown, NOT false
 }
@@ -430,15 +404,9 @@ function readOpenRouterThinkingLevels(
   if (efforts.length === 0) return undefined;
   const { map, unknown } = buildThinkingLevelMap(efforts);
   if (unknown.length > 0) {
-    return ev(
-      map,
-      source,
-      "reported",
-      false,
-      `unsupported effort values [${unknown.join(",")}]; thinkingLevelMap not auto-applied`,
-    );
+    return evidence(map, source, false, `unsupported effort values [${unknown.join(",")}]; thinkingLevelMap not auto-applied`);
   }
-  return ev(map, source, "reported", true);
+  return evidence(map, source);
 }
 
 function readOpenRouterInput(
@@ -454,7 +422,7 @@ function readOpenRouterInput(
     }
   }
   if (mapped.length === 0) return undefined;
-  return ev(mapped, source, "authoritative", true);
+  return evidence(mapped, source);
 }
 
 function readOpenRouterCost(
@@ -485,7 +453,7 @@ function readOpenRouterCost(
   const note = plannable
     ? undefined
     : "openrouter reports conditional/per-request pricing; cost not auto-applied";
-  return ev(cost, source, "reported", plannable, note);
+  return evidence(cost, source, plannable, note);
 }
 
 /** OpenRouter prices are USD per token as strings; pi uses USD per million. */
@@ -531,10 +499,10 @@ export function demoteListLimits(
 ): NormalizedModel {
   const out: NormalizedModel = { ...base, notes: base.notes ? [...base.notes] : [] };
   if (base.contextWindow) {
-    out.contextWindow = { ...base.contextWindow, source, confidence: "reported", plannable: false, note };
+    out.contextWindow = { ...base.contextWindow, source, plannable: false, note };
   }
   if (base.maxTokens) {
-    out.maxTokens = { ...base.maxTokens, source, confidence: "reported", plannable: false, note };
+    out.maxTokens = { ...base.maxTokens, source, plannable: false, note };
   }
   return out;
 }
@@ -605,18 +573,18 @@ export function applyOpenRouterEndpoints(base: NormalizedModel, detailText: stri
   if (ctxList.length > 0) {
     const uniq = uniqueNumbers(ctxList);
     if (uniq.length === 1) {
-      out.contextWindow = ev(uniq[0]!, "openrouter:endpoints", "authoritative", true);
+      out.contextWindow = evidence(uniq[0]!, "openrouter:endpoints");
     } else {
-      out.contextWindow = ev(uniq[0]!, "openrouter:endpoints", "reported", false, `endpoints disagree on context length: ${uniq.join(", ")}`);
+      out.contextWindow = evidence(uniq[0]!, "openrouter:endpoints", false, `endpoints disagree on context length: ${uniq.join(", ")}`);
       ambiguous = true;
     }
   }
   if (maxList.length > 0) {
     const uniq = uniqueNumbers(maxList);
     if (uniq.length === 1) {
-      out.maxTokens = ev(uniq[0]!, "openrouter:endpoints", "authoritative", true);
+      out.maxTokens = evidence(uniq[0]!, "openrouter:endpoints");
     } else {
-      out.maxTokens = ev(uniq[0]!, "openrouter:endpoints", "reported", false, `endpoints disagree on max output: ${uniq.join(", ")}`);
+      out.maxTokens = evidence(uniq[0]!, "openrouter:endpoints", false, `endpoints disagree on max output: ${uniq.join(", ")}`);
       ambiguous = true;
     }
   }
@@ -728,16 +696,16 @@ function normalizeModelsDevEntry(
 ): NormalizedModel {
   const normalized: NormalizedModel = { provider: "opencode", id: slug };
   const name = asString(model.name);
-  if (name !== undefined) normalized.name = ev(name, source, "authoritative", true);
+  if (name !== undefined) normalized.name = evidence(name, source);
   if (model.reasoning === true) {
-    normalized.reasoning = ev(true, source, "reported", true);
+    normalized.reasoning = evidence(true, source);
   } // false is unknown, not authoritative false
   const input = readModelsDevInput(model, source);
   if (input !== undefined) normalized.input = input;
   const context = asNonNegLimit(model.limit?.context);
-  if (context !== undefined) normalized.contextWindow = ev(context, source, "authoritative", true);
+  if (context !== undefined) normalized.contextWindow = evidence(context, source);
   const output = asNonNegLimit(model.limit?.output);
-  if (output !== undefined) normalized.maxTokens = ev(output, source, "authoritative", true);
+  if (output !== undefined) normalized.maxTokens = evidence(output, source);
   return normalized;
 }
 
@@ -752,7 +720,7 @@ function readModelsDevInput(
     if (typeof m === "string" && KNOWN_MODALITIES.has(m)) mapped.push(m as "text" | "image");
   }
   if (mapped.length === 0) return undefined;
-  return ev(mapped, source, "authoritative", true);
+  return evidence(mapped, source);
 }
 
 export function slugOf(id: string): string {
@@ -793,7 +761,7 @@ export function normalizeHyperList(raw: unknown): NormalizedModel[] {
     const source = "hyper:list";
     const entry: NormalizedModel = { provider: "hyper", id };
     const name = asString(model.display_name);
-    if (name !== undefined) entry.name = ev(name, source, "authoritative", true);
+    if (name !== undefined) entry.name = evidence(name, source);
     const thinkingLevelMap = readHyperEffortLevels(model, source);
     if (thinkingLevelMap !== undefined) entry.thinkingLevelMap = thinkingLevelMap;
     out.push(entry);
@@ -833,15 +801,9 @@ function readHyperEffortLevels(
   if (hasMalformed) problems.push("malformed effort entries ignored");
   if (unknown.length > 0) problems.push(`unsupported effort values [${unknown.join(",")}]`);
   if (problems.length > 0) {
-    return ev(
-      map,
-      source,
-      "reported",
-      false,
-      `${problems.join("; ")}; thinkingLevelMap not auto-applied`,
-    );
+    return evidence(map, source, false, `${problems.join("; ")}; thinkingLevelMap not auto-applied`);
   }
-  return ev(map, source, "reported", true);
+  return evidence(map, source);
 }
 
 // ─── OpenCode Zen: live availability authority + models.dev enrichment ───────
@@ -1093,20 +1055,7 @@ export async function probeOpenCodeModel(
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
-function isObject(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
-}
-
-function asString(v: unknown): string | undefined {
-  return typeof v === "string" && v.length > 0 ? v : undefined;
-}
-
-/**
- * Strict whole-string numeric parse. Unlike Number.parseFloat, this REJECTS
- * partial numeric strings with trailing garbage (e.g. "12junk" -> undefined,
- * not 12). Accepts finite numbers and pure numeric strings (incl. sign,
- * decimal, exponent). Returns undefined for NaN/Infinity/empty/non-numeric.
- */
+/** Whole-string numeric parse: "12junk" is rejected, not read as 12. */
 function asStrictNumber(v: unknown): number | undefined {
   if (typeof v === "number") return Number.isFinite(v) ? v : undefined;
   if (typeof v === "string") {
@@ -1119,11 +1068,7 @@ function asStrictNumber(v: unknown): number | undefined {
   return undefined;
 }
 
-/**
- * Strict non-negative finite number for model limits (context/output tokens).
- * Rejects partial numerics, negatives, NaN, and Infinity. A rejected value is
- * treated as unknown (never coerced to 0) so it cannot become an operation.
- */
+/** Non-negative token limit; a rejected value stays unknown, never 0. */
 function asNonNegLimit(v: unknown): number | undefined {
   const n = asStrictNumber(v);
   if (n === undefined || n < 0 || !Number.isFinite(n)) return undefined;
@@ -1133,3 +1078,143 @@ function asNonNegLimit(v: unknown): number | undefined {
 function uniqueNumbers(arr: number[]): number[] {
   return [...new Set(arr)].sort((a, b) => a - b);
 }
+// ─── Thinking levels (cross-provider resolution) ─────────────────────────────
+
+/**
+ * Neither the Zen/Go live catalogs nor models.dev publish reasoning-effort
+ * levels, so a managed model's thinkingLevelMap is resolved from OpenRouter
+ * (`reasoning.supported_efforts`, wins) and Charm Hyper (`effort_levels`,
+ * fills gaps). Disagreement is emitted non-plannable: the model surfaces as
+ * skipped instead of receiving a map we cannot trust.
+ */
+const EFFORTS_OPENROUTER = "openrouter:efforts";
+const EFFORTS_HYPER = "hyper:efforts";
+const EFFORTS_AGREED = "openrouter+hyper:efforts";
+
+type LevelMap = Readonly<Record<string, string | null>>;
+
+interface LevelSet {
+  readonly map: LevelMap;
+  readonly source: string;
+}
+
+/** OpenRouter lookup: a level set, no data, or same-slug models that disagree. */
+type OpenRouterLookup =
+  | { readonly kind: "set"; readonly set: LevelSet }
+  | { readonly kind: "none" }
+  | { readonly kind: "ambiguous" };
+
+export function resolveThinkingLevels(
+  provider: ManagedProvider,
+  modelId: string,
+  diagnosis: Diagnosis,
+): Evidence<LevelMap> | undefined {
+  const fromOpenRouter = levelsFromOpenRouter(provider, modelId, diagnosis);
+  const fromHyper = levelsFromHyper(provider, modelId, diagnosis);
+
+  if (fromOpenRouter.kind === "ambiguous") {
+    return evidence({}, EFFORTS_OPENROUTER, false, "multiple openrouter models match the slug with differing effort levels; not auto-applied");
+  }
+  if (fromOpenRouter.kind === "none") {
+    return fromHyper === undefined ? undefined : evidence(fromHyper.map, fromHyper.source);
+  }
+  if (fromHyper === undefined) {
+    return evidence(fromOpenRouter.set.map, fromOpenRouter.set.source);
+  }
+  if (levelMapsEqual(fromOpenRouter.set.map, fromHyper.map)) {
+    return evidence(fromOpenRouter.set.map, EFFORTS_AGREED);
+  }
+  return evidence(
+    fromOpenRouter.set.map,
+    EFFORTS_OPENROUTER,
+    false,
+    `thinking levels disagree — openrouter ${describeLevels(fromOpenRouter.set.map)} vs hyper ${describeLevels(fromHyper.map)}; not auto-applied`,
+  );
+}
+
+/** Attach resolved levels (and the implied reasoning flag); never replaces
+ *  evidence the model already carries. */
+export function enrichThinkingLevels(
+  provider: ManagedProvider,
+  nm: NormalizedModel,
+  diagnosis: Diagnosis,
+): NormalizedModel {
+  if (nm.thinkingLevelMap !== undefined) return nm;
+
+  const resolved = resolveThinkingLevels(provider, nm.id, diagnosis);
+
+  if (resolved === undefined) return nm;
+
+  const out: NormalizedModel = { ...nm, thinkingLevelMap: resolved };
+  const hasReasoning = nm.reasoning?.plannable === true && nm.reasoning.value === true;
+
+  if (resolved.plannable && !hasReasoning) {
+    out.reasoning = evidence(true, resolved.source);
+  }
+  return out;
+}
+
+/** Exact id for openrouter-managed models, unique slug for zen/go bare ids. */
+function levelsFromOpenRouter(
+  provider: ManagedProvider,
+  modelId: string,
+  diagnosis: Diagnosis,
+): OpenRouterLookup {
+  const source = diagnosis.sources.find((s) => s.id === "openrouter");
+
+  if (!source || source.status !== "ok") return { kind: "none" };
+
+  const matches = source.models.filter(
+    (m) => m.thinkingLevelMap !== undefined && (provider === "openrouter" ? m.id === modelId : slugOf(m.id) === modelId),
+  );
+
+  const first = matches[0]?.thinkingLevelMap;
+
+  if (first === undefined) return { kind: "none" };
+
+  const isConsistent = matches.every((m) => levelMapsEqual(first.value, m.thinkingLevelMap!.value));
+
+  if (!isConsistent) return { kind: "ambiguous" };
+
+  return { kind: "set", set: { map: first.value, source: EFFORTS_OPENROUTER } };
+}
+
+/** Hyper ids are bare model ids; openrouter ids are vendor-prefixed. */
+function levelsFromHyper(
+  provider: ManagedProvider,
+  modelId: string,
+  diagnosis: Diagnosis,
+): LevelSet | undefined {
+  const source = diagnosis.sources.find((s) => s.id === "hyper");
+
+  if (!source || source.status !== "ok") return undefined;
+
+  const match = source.models.find(
+    (m) => m.thinkingLevelMap !== undefined && (provider === "openrouter" ? slugOf(modelId) === m.id : m.id === modelId),
+  );
+
+  const levels = match?.thinkingLevelMap;
+
+  if (levels === undefined) return undefined;
+
+  return { map: levels.value, source: EFFORTS_HYPER };
+}
+
+/** Same non-null level -> effort bindings, order-insensitive. */
+function levelMapsEqual(a: LevelMap, b: LevelMap): boolean {
+  const bindings = (map: LevelMap) =>
+    JSON.stringify(Object.entries(map).filter(([, v]) => v !== null).sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0)));
+  return bindings(a) === bindings(b);
+}
+
+const PI_LEVEL_ORDER: readonly string[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/** Compact level list for disagreement notes, in pi order. */
+function describeLevels(map: LevelMap): string {
+  const levels = Object.entries(map)
+    .filter(([, v]) => v !== null)
+    .map(([level]) => level)
+    .sort((x, y) => PI_LEVEL_ORDER.indexOf(x) - PI_LEVEL_ORDER.indexOf(y));
+  return `[${levels.join(",")}]`;
+}
+

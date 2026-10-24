@@ -16,8 +16,8 @@ import {
   safeFetch,
   sha256Hex,
   nowIso,
+  enrichThinkingLevels,
 } from "./sources.ts";
-import { enrichThinkingLevels } from "./thinking.ts";
 import { readAuthKeys, syncGenericProviders } from "./generic.ts";
 import {
   deepClone,
@@ -33,6 +33,7 @@ import {
   isCompositePath,
   allowlistedSubfields,
 } from "./types.ts";
+import { asString, evidence, isObject, messageOf } from "./util.ts";
 import type {
   ApplyResult,
   Diagnosis,
@@ -674,7 +675,7 @@ async function probeLiveCatalogCandidates(
 
 // ─── Operation building ──────────────────────────────────────────────────────
 
-/** The nine allowlisted model fields and where their Evidence lives. */
+/** Allowlisted model fields and where their evidence lives. */
 const MODEL_FIELD_KEYS: ReadonlyArray<{ readonly path: MutationPath; readonly key: keyof NormalizedModel }> = [
   { path: "name", key: "name" },
   { path: "baseUrl", key: "baseUrl" },
@@ -688,10 +689,8 @@ const MODEL_FIELD_KEYS: ReadonlyArray<{ readonly path: MutationPath; readonly ke
   { path: "compat", key: "compat" },
 ];
 
-/** pi's provider-composer applies this tiny default when a models.json entry
- *  omits maxTokens — far too small for thinking models (a `high` reasoning
- *  budget alone is 16384, so the answer gets zero tokens). Used to detect and
- *  neutralize default-derived limits (see normalizeEffective). */
+/** pi fills a missing maxTokens with this tiny default; it is an absence, not
+ *  a ceiling (a `high` reasoning budget alone is 16384). */
 export const PI_DEFAULT_MAX_OUTPUT_TOKENS = 16384;
 
 /** Why a catalog model must NOT be added: the source did not publish both
@@ -720,7 +719,7 @@ export function upsertNewModelOps(
   for (const { path } of MODEL_FIELD_KEYS) {
     const ev = evidenceOf(nmInput, path);
     if (!ev || !ev.plannable) continue;
-    const opSource = ev.source ?? src;
+    const opSource = ev.source;
     ops.push({
       provider,
       modelId: nmInput.id,
@@ -746,21 +745,14 @@ export function upsertNewModelOps(
   return ops;
 }
 
-type FieldEvidence = { readonly value: unknown; readonly plannable: boolean; readonly note?: string; readonly source?: string };
-
-function evidenceOf(nm: NormalizedModel, path: MutationPath): FieldEvidence | undefined {
-  const key = MODEL_FIELD_KEYS.find((f) => f.path === path)?.key as keyof NormalizedModel | undefined;
+function evidenceOf(nm: NormalizedModel, path: MutationPath): Evidence<unknown> | undefined {
+  const key = MODEL_FIELD_KEYS.find((f) => f.path === path)?.key;
   if (!key) return undefined;
-  const v = nm[key] as unknown as FieldEvidence | undefined;
-  if (
-    v !== null &&
-    typeof v === "object" &&
-    "plannable" in (v as Record<string, unknown>) &&
-    "value" in (v as Record<string, unknown>)
-  ) {
-    return v as FieldEvidence;
-  }
-  return undefined;
+
+  const value = nm[key] as Evidence<unknown> | undefined;
+
+  if (!isObject(value) || !("plannable" in value) || !("value" in value)) return undefined;
+  return value;
 }
 
 /**
@@ -820,23 +812,18 @@ export function buildOperations(
       }
     }
   }
-  return dedupeOps(ops);
+  return ops;
 }
 
-function sourceFor(
-  diagnosis: Diagnosis,
-  provider: ManagedProvider,
-): SourceResult | undefined {
-  if (provider === "openrouter") {
-    return diagnosis.sources.find((s) => s.id === "openrouter");
-  }
-  if (provider === "opencode") {
-    return diagnosis.sources.find((s) => s.id === "opencode-zen");
-  }
-  if (provider === "opencode-go") {
-    return diagnosis.sources.find((s) => s.id === "opencode-go");
-  }
-  return undefined;
+const SOURCE_BY_PROVIDER: Readonly<Record<ManagedProvider, OfficialSourceId>> = {
+  openrouter: "openrouter",
+  opencode: "opencode-zen",
+  "opencode-go": "opencode-go",
+};
+
+function sourceFor(diagnosis: Diagnosis, provider: ManagedProvider): SourceResult | undefined {
+  const id = SOURCE_BY_PROVIDER[provider];
+  return diagnosis.sources.find((s) => s.id === id);
 }
 
 
@@ -855,9 +842,8 @@ function opsForModel(
     const before = (entry as Record<string, unknown>)[path];
     const after = ev.value;
     if (fieldDiffers(path, before, after)) {
-      // Per-field provenance: use THIS field's evidence source (e.g.
-      // openrouter:endpoints) rather than the model-level name source.
-      const opSource = ev.source ?? src;
+      // Per-field provenance (e.g. openrouter:endpoints), not the model-level one.
+      const opSource = ev.source;
       ops.push({
         provider,
         modelId: entry.id,
@@ -870,20 +856,6 @@ function opsForModel(
     }
   }
   return ops;
-}
-
-/** Build ops that describe creating a brand-new model entry from a source. */
-
-function dedupeOps(ops: PatchOperation[]): PatchOperation[] {
-  const seen = new Set<string>();
-  const out: PatchOperation[] = [];
-  for (const op of ops) {
-    const key = `${op.provider}|${op.modelId}|${op.path}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(op);
-  }
-  return out;
 }
 
 // ─── Full one-shot reconcile (single /model-doctor command) ──────────────────
@@ -1015,32 +987,11 @@ export function makeSkipped(
   return characteristics ? { provider, modelId, action: "skipped", reason, characteristics } : { provider, modelId, action: "skipped", reason };
 }
 
-/**
- * Pure full reconcile for the single /model-doctor command. Processes ALL
- * managed providers in one pass and returns BOTH the operations to apply AND a
- * structured report:
- *  - openrouter/opencode/opencode-go: UPDATE drifted authoritative
- *    fields on existing managed entries, and ADD official-catalog models that
- *    are ABSENT from Pi's effective registry (genuinely new models, never
- *    duplicating built-ins). Each provider's official catalog is its own
- *    availability authority (openrouter list; live Zen /zen/v1; live Go
- *    /zen/go/v1), enriched with models.dev metadata
- *    where applicable; the Zen and Go live catalogs are distinct and never
- *    confused.
- * Source failures are isolated per provider. Ambiguous/unsafe fields/models are
- * skipped (no op) and reported, never invented — including limits: a model whose
- * context window or max output is not published is skipped, never added with
- * guessed numbers.
- *
- * OpenRouter retire-cutoff: models created before 2026-04-01 are never
- * re-added by a reconcile (no ADD op, no catalog_only finding). Existing user
- * entries for retired models are still updated in place (they were explicitly
- * kept by the user).
- */
+/** OpenRouter models created before this date are never re-added; entries the
+ *  user already keeps are still updated in place. */
 export const OPENROUTER_RETIRE_CUTOFF_MS = Date.parse("2026-04-01T00:00:00Z");
 
-/** True when an OpenRouter source model predates the retire cutoff. Models
- *  without a parseable created timestamp are never treated as retired. */
+/** Models without a parseable created timestamp are never treated as retired. */
 export function openRouterRetired(nm: NormalizedModel): boolean {
   return (
     typeof nm.createdMs === "number" &&
@@ -1049,6 +1000,12 @@ export function openRouterRetired(nm: NormalizedModel): boolean {
   );
 }
 
+/**
+ * Reconcile the three managed providers in one pass: update drifted fields on
+ * existing entries, add genuinely new catalog models (never duplicating pi's
+ * built-ins, never with unpublished limits), and report every skip with its
+ * reason. Pure: returns operations plus the report, writes nothing.
+ */
 export function reconcileAll(
   diagnosis: Diagnosis,
   userModels: ModelsConfig,
@@ -1133,7 +1090,7 @@ export function reconcileAll(
       .map((f) => `${f.code}: ${f.message}`),
   );
 
-  return { operations: dedupeOps(operations), report: { results, totals, warnings } };
+  return { operations, report: { results, totals, warnings } };
 }
 
 export interface ReconcileOptions extends DiagnoseOptions {
@@ -1604,11 +1561,8 @@ function asModelsConfig(v: unknown): ModelsConfig {
   return { providers: {} };
 }
 
-/**
- * Strict models.json parse for plan/apply: validate the user-contract schema and
- * throw (fail closed) on malformed input instead of silently treating it as
- * empty. `models[]` entries must be objects with string ids.
- */
+/** Strict models.json parse: throw on malformed input instead of treating it as
+ *  empty. `models[]` entries must be objects with string ids. */
 export function parseModelsConfigStrict(text: string): ModelsConfig {
   const v = parseConfig(text);
   if (!isObject(v) || !isObject((v as { providers?: unknown }).providers)) {
@@ -1652,21 +1606,11 @@ export function parseModelsConfigStrict(text: string): ModelsConfig {
 }
 
 /**
- * Pre-write Pi model-config schema gate. Validates the FINAL models.json content
- * against the real Pi Model schema requirements that model-doctor must never
- * violate. Pi does not export a runtime validator, so this is a local strict
- * check (the documented fallback). Returns a list of human-readable violations
- * (empty = valid). Failing this gate refuses the write (fail closed).
- *
- * Rules (per model entry, only when the field is present):
- *  - cost: object with input/output/cacheRead/cacheWrite all finite numbers; if
- *    tiers[] present, each tier must carry the four finite-number rates.
- *  - contextWindow / maxTokens: finite number >= 0.
- *  - reasoning: boolean.
- *  - input: array of "text"/"image".
- *  - name / api: string.
- *  - thinkingLevelMap: object (string->string|null).
- *  - none of the above metadata fields may be null.
+ * Pre-write schema gate: validates the final models.json against the pi model
+ * schema (pi exports no runtime validator). Returns human-readable violations;
+ * any violation refuses the write. Optional fields are checked only when
+ * present: cost rates are finite numbers (tiers too), limits are finite and
+ * non-negative, input is "text"/"image", and no metadata field is null.
  */
 export function validateModelsConfig(config: ModelsConfig): string[] {
   const errors: string[] = [];
@@ -1773,14 +1717,6 @@ function sortKeys(v: unknown): unknown {
   return v;
 }
 
-function isObject(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
-}
-
-function asString(v: unknown): string | undefined {
-  return typeof v === "string" && v.length > 0 ? v : undefined;
-}
-
 function describeTarget(t: ParsedTarget): string {
   if (t.kind === "model" && t.provider && t.modelId) return `${t.provider}/${t.modelId}`;
   if (t.kind === "provider" && t.provider) return t.provider;
@@ -1792,10 +1728,5 @@ function cryptoRandomId(): string {
   return sha256Hex(`${nowIso()}:${Math.random()}`).slice(0, 16);
 }
 
-function messageOf(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  return String(err);
-}
-
-/** Re-exported for index.ts / tests. */
+/** Re-exported for tests. */
 export { sha256Buffer };

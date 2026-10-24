@@ -8,7 +8,7 @@ import { mkdtemp, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { FetchFn, FetchInit, FetchResponse } from "../types.ts";
+import type { FetchFn, FetchInit, FetchResponse } from "../src/types.ts";
 
 export async function makeTempDir(prefix = "md-test-"): Promise<string> {
   return mkdtemp(join(tmpdir(), prefix));

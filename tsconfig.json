@@ -17,5 +17,5 @@
     "types": ["node"],
     "resolveJsonModule": false
   },
-  "include": ["*.ts", "test/**/*.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts"]
 }

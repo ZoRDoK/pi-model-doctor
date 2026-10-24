@@ -1,16 +1,13 @@
 /**
- * Storage primitives for model-doctor: hashing, deterministic JSON
- * serialization, timestamped 0600 backups, and atomic write+verify+rollback.
- *
- * Every path is passed in; nothing is computed from global state, so the whole
- * module is testable against temp directories (mkdtemp).
- *
- * Only node:* imports are used.
+ * Storage primitives: hashing, deterministic JSON, 0600 backups and an atomic
+ * write with verify + rollback. Every path is injected, so tests run in temp
+ * dirs. node:* imports only.
  */
-import { createHash } from "node:crypto";
-import { open, readFile, mkdir, rename, lstat, realpath } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
+import { lstat, mkdir, open, readFile, realpath, rename, unlink } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import { randomBytes } from "node:crypto";
+
+import { messageOf } from "./util.ts";
 
 export interface RawRead {
   readonly bytes: Buffer;
@@ -29,11 +26,6 @@ export function sha256Buffer(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-/** sha256 hex of a string (utf8). */
-export function sha256String(text: string): string {
-  return createHash("sha256").update(Buffer.from(text, "utf8")).digest("hex");
-}
-
 /**
  * Deterministic serialization matching pi's models.json format: object key
  * insertion order preserved (JSON.parse keeps order), two-space indent, and a
@@ -48,12 +40,9 @@ export function parseConfig(text: string): unknown {
   return JSON.parse(text);
 }
 
-/** Structural deep clone that preserves object key insertion order. */
+/** Deep clone that preserves key insertion order. */
 export function deepClone<T>(value: T): T {
-  if (typeof structuredClone === "function") {
-    return structuredClone(value);
-  }
-  return JSON.parse(JSON.stringify(value)) as T;
+  return structuredClone(value);
 }
 
 /** Build a filesystem-safe timestamp for backup names. */
@@ -144,7 +133,7 @@ async function fsyncDirectory(dirPath: string): Promise<void> {
   let dirHandle;
   try {
     dirHandle = await open(dirPath, "r");
-    await dirHandle.sync(); // fsync the directory fd so the rename is durable
+    await dirHandle.sync();
   } catch {
     // Some platforms/filesystems cannot fsync a directory fd; durability is
     // best-effort. The rename has already happened.
@@ -160,12 +149,7 @@ async function fsyncDirectory(dirPath: string): Promise<void> {
 }
 
 async function safeUnlink(path: string): Promise<void> {
-  const { unlink } = await import("node:fs/promises");
-  try {
-    await unlink(path);
-  } catch {
-    /* ignore */
-  }
+  await unlink(path).catch(() => undefined);
 }
 
 /**
@@ -341,7 +325,4 @@ function buffersEqual(a: Uint8Array, b: Uint8Array): boolean {
   return diff === 0;
 }
 
-function messageOf(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  return String(err);
-}
+

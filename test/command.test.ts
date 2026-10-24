@@ -4,7 +4,7 @@ import { writeFile, mkdir, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import factory, { __internals } from "../index.ts";
+import factory, { __internals } from "../src/index.ts";
 import {
   mockFetch,
   modelsDevFixture,

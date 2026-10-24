@@ -67,6 +67,19 @@ are trusted.
 - Secrets (api keys, OAuth tokens) are never logged, echoed, or copied into models.json; auth headers are attached only to the provider's own listing request.
 - Unknown/extra fields, credentials, base URLs and headers of existing entries are preserved byte-for-byte.
 
+## Code layout
+
+| file | role |
+|---|---|
+| `src/index.ts` | pi entry: registry adapters + the single command handler |
+| `src/doctor.ts` | diagnose → plan → reconcile → atomic apply |
+| `src/sources.ts` | official catalog fetch/normalize + thinking-level resolution |
+| `src/generic.ts` | wire-protocol sync for every other provider |
+| `src/storage.ts` | atomic write, backups, hashing |
+| `src/report.ts` | Markdown report + terminal-safe sanitizing |
+| `src/paths.ts` | the only module that reads pi's env and paths |
+| `src/types.ts`, `src/util.ts` | shared types and pure helpers |
+
 ## Development
 
 ```bash

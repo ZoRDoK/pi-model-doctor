@@ -1,7 +1,7 @@
 {
   "name": "pi-model-doctor",
-  "version": "1.0.0",
-  "description": "pi extension: /model-doctor — reconciles OpenRouter, OpenCode, OpenCode Go and any OpenAI/Anthropic/Gemini-compatible provider you configured, into models.json. One safe atomic pass.",
+  "version": "1.1.0",
+  "description": "pi extension: /model-doctor — reconciles OpenRouter, OpenCode, OpenCode Go and any OpenAI/Anthropic/Gemini-compatible provider you configured into models.json. One safe atomic pass, no guessed limits.",
   "type": "module",
   "keywords": [
     "pi-package",
@@ -13,13 +13,18 @@
   ],
   "license": "MIT",
   "author": "ZoRDoK",
+  "files": [
+    "src",
+    "assets",
+    "CHANGELOG.md"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/ZoRDoK/pi-model-doctor"
   },
   "pi": {
     "extensions": [
-      "./index.ts"
+      "./src/index.ts"
     ]
   },
   "scripts": {

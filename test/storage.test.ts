@@ -13,7 +13,7 @@ import {
   sha256Buffer,
   writeBackup,
   backupStamp,
-} from "../storage.ts";
+} from "../src/storage.ts";
 import { makeTempDir, writeJson } from "./helpers.ts";
 
 describe("serializeConfig", () => {
