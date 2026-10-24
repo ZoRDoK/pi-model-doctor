@@ -1,3 +1,5 @@
+![model-doctor report](./assets/model-doctor-report.png)
+
 # pi-model-doctor
 
 A [pi](https://github.com/earendil-works/pi-coding-agent) extension that adds a single command:
