@@ -29,7 +29,8 @@ rollback.
 Generic rules:
 
 - the live listing decides which model ids exist;
-- **genuinely new ids are added** with inherited transport (`api`, `baseUrl`) and any published metadata (Gemini limits, display names);
+- ids Pi already serves from its own catalog are **never duplicated** into `models.json`;
+- **genuinely new ids are added** with inherited transport (`api`, `baseUrl`) and any published metadata (Gemini limits, display names) — but only when the listing publishes **both** limits. A model whose context window or max output is unknown is skipped and reported instead of being written with a guess;
 - existing entries are **never modified** and nothing is ever **removed**;
 - providers not present in pi's effective registry are skipped.
 
@@ -45,7 +46,17 @@ Then run `/model-doctor` inside pi. The command takes no arguments.
 
 A compact Markdown report lands in the chat transcript: a per-provider totals
 table, an **Added** table (model · thinking · ctx / max out · input), an
-**Updated** was → now table, and skipped models as a bare name list.
+**Updated** was → now table, and skipped models grouped by skip reason.
+
+## No guessed limits
+
+Every added entry carries a context window and a max output that the provider
+actually published. The doctor never invents either: a model without confirmed
+limits would silently run on Pi's tiny defaults, so it is reported as skipped
+instead. For OpenRouter this means the per-model endpoints view must confirm the
+limits; for OpenAI-compatible listings only explicit limit fields
+(`context_length`/`context_window`, `max_completion_tokens`/`max_output_tokens`)
+are trusted.
 
 ## Safety
 

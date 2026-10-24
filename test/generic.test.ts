@@ -109,7 +109,12 @@ describe("syncGenericProviders", () => {
   test("adds genuinely new ids, leaves existing entries alone, never logs keys", async () => {
     const fetchFn = fetchRecorder((url) => {
       if (url === "https://api.deepseek.com/v1/models") {
-        return jsonResponse({ data: [{ id: "deepseek-chat" }, { id: "deepseek-v4-new" }] });
+        return jsonResponse({
+          data: [
+            { id: "deepseek-chat" },
+            { id: "deepseek-v4-new", context_length: 128000, max_completion_tokens: 32000 },
+          ],
+        });
       }
       return null;
     });
@@ -117,6 +122,7 @@ describe("syncGenericProviders", () => {
       userModels: candidateModels(),
       authKeys: { deepseek: "sk-ds-TEST-KEY" },
       activeProvider: (p) => p !== "inactive",
+      effectiveHasId: (p, id) => p === "deepseek" && id === "deepseek-chat",
       fetchFn,
     });
     strictEqual(res.totals.find((t) => t.provider === "deepseek")?.sourceStatus, "ok");
@@ -160,6 +166,7 @@ describe("syncGenericProviders", () => {
         userModels: user,
         authKeys: {},
         activeProvider: () => true,
+        effectiveHasId: () => false,
         fetchFn,
       });
       const added = res.results.find((r) => r.modelId === "gemini-3.1-pro")!;
@@ -174,6 +181,54 @@ describe("syncGenericProviders", () => {
     }
   });
 
+  test("a listing without published limits is skipped, never added with guesses", async () => {
+    const fetchFn = fetchRecorder((url) => {
+      if (url === "https://api.deepseek.com/v1/models") {
+        return jsonResponse({ data: [{ id: "deepseek-v4-unlimited" }] });
+      }
+      return null;
+    });
+    const res = await syncGenericProviders({
+      userModels: candidateModels(),
+      authKeys: {},
+      activeProvider: (p) => p !== "inactive",
+      effectiveHasId: () => false,
+      fetchFn,
+    });
+    strictEqual(res.operations.length, 0, "no ops for an unknown-limits model");
+    strictEqual(res.totals.find((t) => t.provider === "deepseek")?.added, 0);
+    const entry = res.results.find((r) => r.modelId === "deepseek-v4-unlimited");
+    assertOk(entry, "skip reported");
+    strictEqual(entry?.action, "skipped");
+    assertOk(/context window not published/.test(entry?.reason ?? ""), "reason names the missing limit");
+  });
+
+  test("models pi already serves are never duplicated (built-in catalog)", async () => {
+    const fetchFn = fetchRecorder((url) => {
+      if (url.startsWith("https://api.z.ai/api/coding/paas/v4/models")) {
+        return jsonResponse({
+          data: [
+            { id: "glm-4.7", context_length: 204800, max_completion_tokens: 131072 },
+            { id: "glm-5.3", context_length: 1000000, max_completion_tokens: 131072 },
+            { id: "glm-5.3-flash", context_length: 1000000, max_completion_tokens: 131072 },
+          ],
+        });
+      }
+      return null;
+    });
+    const res = await syncGenericProviders({
+      userModels: candidateModels(),
+      authKeys: {},
+      activeProvider: (p) => p !== "inactive",
+      // Same ids pi's built-in zai catalog already provides.
+      effectiveHasId: (p, id) => p === "zai" && ["glm-4.7", "glm-5.3", "glm-5.3-flash"].includes(id),
+      fetchFn,
+    });
+    strictEqual(res.operations.length, 0, "no duplicate entries for built-in models");
+    strictEqual(res.totals.find((t) => t.provider === "zai")?.added, 0);
+    strictEqual(res.results.length, 0, "nothing added or skipped: pi already serves them");
+  });
+
   test("unreachable provider -> unavailable total, no ops, warning recorded", async () => {
     const fetchFn = (async () => {
       throw new Error("boom");
@@ -182,6 +237,7 @@ describe("syncGenericProviders", () => {
       userModels: candidateModels(),
       authKeys: {},
       activeProvider: () => true,
+      effectiveHasId: () => false,
       fetchFn,
     });
     strictEqual(res.operations.length, 0);
@@ -216,7 +272,12 @@ describe("runReconcile integrates generic providers", () => {
     try {
       const fetchFn = fetchRecorder((url) => {
         if (url === "https://api.deepseek.com/v1/models") {
-          return jsonResponse({ data: [{ id: "deepseek-chat" }, { id: "deepseek-reasoner-v4" }] });
+          return jsonResponse({
+            data: [
+              { id: "deepseek-chat" },
+              { id: "deepseek-reasoner-v4", context_length: 128000, max_completion_tokens: 32000 },
+            ],
+          });
         }
         return null;
       });

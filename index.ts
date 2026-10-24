@@ -99,7 +99,7 @@ interface RegistryLike {
   hasConfiguredAuth(model: EffectiveLike): boolean;
 }
 
-function normalizeEffective(provider: ManagedProvider, model: EffectiveLike): NormalizedModel {
+function normalizeEffective(provider: string, model: EffectiveLike): NormalizedModel {
   const source = "pi:effective";
   const ev = <T>(value: T, plannable = true): Evidence<T> => ({ value, source, confidence: "authoritative", plannable });
   const out: NormalizedModel = { provider, id: model.id };
@@ -113,25 +113,26 @@ function normalizeEffective(provider: ManagedProvider, model: EffectiveLike): No
   // pi's provider-composer fills missing maxTokens with its tiny 16384 default;
   // without an explicit value the entry really is UNKNOWN. Emitting the default
   // here would let the go-2 mirror stamp 16384 as authoritative, so treat
-  // default-valued limits as missing (the plan layer's ensureMaxTokens then
-  // derives a safe explicit value instead).
+  // default-valued limits as missing instead of a real ceiling.
   if (model.maxTokens !== PI_DEFAULT_MAX_OUTPUT_TOKENS) out.maxTokens = ev(model.maxTokens);
   if (model.compat) out.compat = ev(model.compat);
   return out;
 }
 
+/** Snapshot of EVERY provider Pi serves — built-in catalog entries included.
+ *  Generic sync uses it to avoid duplicating models Pi already provides. */
 function buildEffective(registry: RegistryLike): EffectiveSnapshot {
-  const providers = {} as Record<ManagedProvider, NormalizedModel[]>;
   let all: readonly EffectiveLike[];
   try {
     all = registry.getAll();
   } catch {
     all = [];
   }
-  for (const p of MANAGED_PROVIDERS) {
-    providers[p] = all
-      .filter((m) => m && typeof m === "object" && m.provider === p && typeof m.id === "string")
-      .map((m) => normalizeEffective(p, m));
+  const providers: Record<string, NormalizedModel[]> = {};
+  for (const p of MANAGED_PROVIDERS) providers[p] = [];
+  for (const m of all) {
+    if (!m || typeof m !== "object" || typeof m.provider !== "string" || typeof m.id !== "string") continue;
+    (providers[m.provider] ??= []).push(normalizeEffective(m.provider, m));
   }
   return { providers };
 }
@@ -314,8 +315,20 @@ export function buildResultReport(report: ReconcileReport, result: ApplyResult):
     for (const r of updated) lines.push(...fmtUpdatedRows(r));
   }
   if (skipped.length > 0) {
-    const names = skipped.map((r) => "`" + mdCell(r.provider) + "/" + mdCell(r.modelId) + "`").join(", ");
-    lines.push("", "**Skipped (" + skipped.length + "):** " + names);
+    // Reasons matter now that "no published limits" is a skip: group them so a
+    // long listing stays readable instead of repeating one reason per line.
+    lines.push("", "**Skipped (" + skipped.length + "):**");
+    const byReason = new Map<string, string[]>();
+    for (const r of skipped) {
+      const name = "`" + mdCell(r.provider) + "/" + mdCell(r.modelId) + "`";
+      const key = sanitize(r.reason ?? "skipped");
+      const list = byReason.get(key) ?? [];
+      list.push(name);
+      byReason.set(key, list);
+    }
+    for (const [reason, names] of byReason) {
+      lines.push("- " + reason + ": " + names.join(", "));
+    }
   }
   return lines.join("\n");
 }
@@ -430,9 +443,10 @@ function helpText(): string {
     "One invocation fetches the official sources (OpenRouter, models.dev), reads",
     "Pi's effective catalog + your models.json/settings.json, then:",
  "  • updates drifted authoritative fields on existing managed entries;",
-    "  • adds official models absent from Pi's effective registry (genuinely new);",
+    "  • adds official models absent from Pi's effective registry (genuinely new),",
+    "    only with published limits — never with guessed ctx / max out;",
     "  • mirrors opencode-go into opencode-go-2;",
-    "  • skips unsafe/ambiguous models/fields and reports them.",
+    "  • skips unsafe/ambiguous models/fields and unknown-limits models, and reports them.",
     "",
     "Then it writes models.json atomically (timestamped backup + CAS + rollback)",
     "and prints a per-model result (added/updated/skipped) with characteristics",

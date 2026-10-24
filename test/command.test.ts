@@ -111,6 +111,14 @@ function fetchRoutes() {
     "https://openrouter.ai/api/v1/models/openai/gpt-test/endpoints": {
       body: openRouterEndpointsFixture({ context: [128000], max: [16384] }),
     },
+    // Limits are only plannable once the endpoints view confirms them, so every
+    // add candidate needs its own agreeing detail payload.
+    "https://openrouter.ai/api/v1/models/deepseek/ds-alias/endpoints": {
+      body: openRouterEndpointsFixture({ context: [64000], max: [8192] }),
+    },
+    "https://openrouter.ai/api/v1/models/free/zero-cost/endpoints": {
+      body: openRouterEndpointsFixture({ context: [32000], max: [8192] }),
+    },
   });
 }
 
@@ -173,8 +181,10 @@ describe("single /model-doctor command", () => {
       assertOk(out.includes("| provider | added | updated | skipped | unchanged | source |"), "output has provider totals table");
       // No warnings block, no provenance noise (user-facing report is compact).
       strictEqual(out.includes("warnings ("), false, "warnings block omitted");
-      strictEqual(out.includes("skipped:"), false, "skipped reasons omitted; names only");
       strictEqual(out.includes("credentials, base URLs"), false, "verbose footer omitted");
+      // A skipped model is listed WITH its reason (no guessing, no silence).
+      assertOk(out.includes("**Skipped ("), "skipped models listed");
+      assertOk(out.includes("not published by source"), "skip reason shown");
 
       const m = JSON.parse((await readFile(modelsPath, "utf8")));
       // Credentials / base URL / headers preserved.

@@ -38,6 +38,7 @@ import type {
   Diagnosis,
   DoctorPaths,
   EffectiveSnapshot,
+  Evidence,
   FetchFn,
   Finding,
   ManagedProvider,
@@ -170,10 +171,7 @@ export function diagnoseManagedDrift(
   sources: readonly SourceResult[],
 ): Finding[] {
   const findings: Finding[] = [];
-  const driftSource = (provider: ManagedProvider, entry: ModelEntry, nmRaw: NormalizedModel): void => {
-    // Policy: maxTokens is always resolvable (ensureMaxTokens), so it must
-    // never surface as an ambiguity/missing warning — report the derived plan.
-    const nm = ensureMaxTokens(nmRaw);
+  const driftSource = (provider: ManagedProvider, entry: ModelEntry, nm: NormalizedModel): void => {
     if (nm.aliases && nm.aliases.length > 0) {
       findings.push({
         provider, modelId: entry.id, severity: "info", code: "alias",
@@ -693,72 +691,59 @@ const MODEL_FIELD_KEYS: ReadonlyArray<{ readonly path: MutationPath; readonly ke
 /** pi's provider-composer applies this tiny default when a models.json entry
  *  omits maxTokens — far too small for thinking models (a `high` reasoning
  *  budget alone is 16384, so the answer gets zero tokens). Used to detect and
- *  neutralize default-derived limits (see ensureMaxTokens / normalizeEffective). */
+ *  neutralize default-derived limits (see normalizeEffective). */
 export const PI_DEFAULT_MAX_OUTPUT_TOKENS = 16384;
 
-/** Last-resort max output when no official source reports one: generous on
- *  purpose — providers that cap lower clamp or reject per-request, which is a
- *  visible, fixable error, unlike the silent 16384 ceiling that starves
- *  reasoning models of any visible output. */
-export const FALLBACK_MAX_OUTPUT_TOKENS = 65536;
+/** Why a catalog model must NOT be added: the source did not publish both
+ *  limits as confirmed numbers. Guessing them (a flat fallback, or the context
+ *  window reused as max output) writes a wrong entry that silently degrades the
+ *  model, so an unknown-limits model is reported as skipped instead. */
+export function missingLimitReason(nm: NormalizedModel): string | undefined {
+  const known = (ev: Evidence<number> | undefined): boolean =>
+    ev !== undefined && ev.plannable && typeof ev.value === "number" && Number.isFinite(ev.value) && ev.value > 0;
+  if (!known(nm.contextWindow)) return "context window not published by source; not added";
+  if (!known(nm.maxTokens)) return "max output tokens not published by source; not added";
+  return undefined;
+}
 
-/** Guarantee a plannable maxTokens evidence on every planned model. When the
- *  sources carry none (or only non-plannable/ambiguous), derive one — from the
- *  known context window when available, else the flat fallback — instead of
- *  leaving the field unset for pi's tiny 16384 default. Never reports a
- *  "missing maxTokens" condition; it always resolves it. */
+/** Build ops for a brand-new entry. Returns [] when the source carries no
+ *  confirmed limits (see missingLimitReason): a new entry is never written with
+ *  guessed context/max-output numbers. */
 export function upsertNewModelOps(
   provider: string,
   nmInput: NormalizedModel,
   sourceLabel?: string,
 ): PatchOperation[] {
+  if (missingLimitReason(nmInput) !== undefined) return [];
   const ops: PatchOperation[] = [];
-  // Policy: every new entry carries an explicit maxTokens (see ensureMaxTokens).
-  const nm = ensureMaxTokens(nmInput);
-  const src = sourceLabel ?? nm.name?.source ?? "official-source";
+  const src = sourceLabel ?? nmInput.name?.source ?? "official-source";
   for (const { path } of MODEL_FIELD_KEYS) {
-    const ev = evidenceOf(nm, path);
+    const ev = evidenceOf(nmInput, path);
     if (!ev || !ev.plannable) continue;
     const opSource = ev.source ?? src;
     ops.push({
       provider,
-      modelId: nm.id,
+      modelId: nmInput.id,
       path,
       before: undefined,
       after: ev.value,
       source: opSource,
-      reason: `${opSource}: add model ${nm.id}`,
+      reason: `${opSource}: add model ${nmInput.id}`,
     });
   }
   // A new entry must carry its id even if the source did not name it.
   if (!ops.some((o) => o.path === "name")) {
     ops.unshift({
       provider,
-      modelId: nm.id,
+      modelId: nmInput.id,
       path: "name",
       before: undefined,
-      after: nm.id,
+      after: nmInput.id,
       source: src,
-      reason: `${src}: add model ${nm.id}`,
+      reason: `${src}: add model ${nmInput.id}`,
     });
   }
   return ops;
-}
-
-export function ensureMaxTokens(nm: NormalizedModel): NormalizedModel {
-  const current = nm.maxTokens;
-  if (current && current.plannable && current.value > 0) return nm;
-  const ctx = nm.contextWindow?.value ?? 0;
-  const derived = ctx > 0 ? Math.min(ctx, FALLBACK_MAX_OUTPUT_TOKENS) : FALLBACK_MAX_OUTPUT_TOKENS;
-  return {
-    ...nm,
-    maxTokens: {
-      value: derived,
-      source: "derived:max-tokens-fallback",
-      confidence: "reported",
-      plannable: true,
-    },
-  };
 }
 
 type FieldEvidence = { readonly value: unknown; readonly plannable: boolean; readonly note?: string; readonly source?: string };
@@ -863,12 +848,9 @@ function opsForModel(
   sourceLabel?: string,
 ): PatchOperation[] {
   const ops: PatchOperation[] = [];
-  // Policy: every planned model carries an explicit maxTokens (never unset,
-  // never pi's tiny default — see ensureMaxTokens).
-  const nm = ensureMaxTokens(nmInput);
-  const src = sourceLabel ?? nm.name?.source ?? "official-source";
+  const src = sourceLabel ?? nmInput.name?.source ?? "official-source";
   for (const { path } of MODEL_FIELD_KEYS) {
-    const ev = evidenceOf(nm, path);
+    const ev = evidenceOf(nmInput, path);
     if (!ev || !ev.plannable) continue; // absent or ambiguous -> no mutation
     const before = (entry as Record<string, unknown>)[path];
     const after = ev.value;
@@ -956,8 +938,7 @@ export interface ReconcileReport {
 
 /** True if `nm` has any non-plannable evidence that differs from `entry`
  *  (drift we cannot safely apply -> the model is "skipped", not "unchanged"). */
-function hasAmbiguousDrift(entry: ModelEntry, nmRaw: NormalizedModel): boolean {
-  const nm = ensureMaxTokens(nmRaw);
+function hasAmbiguousDrift(entry: ModelEntry, nm: NormalizedModel): boolean {
   for (const { path } of MODEL_FIELD_KEYS) {
     const ev = evidenceOf(nm, path);
     if (!ev) continue;
@@ -1023,8 +1004,8 @@ function characteristicsFromModel(nm: NormalizedModel): ModelCharacteristics {
   return c;
 }
 
-function makeSkipped(
-  provider: ManagedProvider,
+export function makeSkipped(
+  provider: string,
   modelId: string,
   reason: string,
   nm?: NormalizedModel,
@@ -1047,7 +1028,9 @@ function makeSkipped(
  *    where applicable; the Zen and Go live catalogs are distinct and never
  *    confused.
  * Source failures are isolated per provider. Ambiguous/unsafe fields/models are
- * skipped (no op) and reported, never invented.
+ * skipped (no op) and reported, never invented — including limits: a model whose
+ * context window or max output is not published is skipped, never added with
+ * guessed numbers.
  *
  * OpenRouter retire-cutoff: models created before 2026-04-01 are never
  * re-added by a reconcile (no ADD op, no catalog_only finding). Existing user
@@ -1123,6 +1106,11 @@ export function reconcileAll(
           continue;
         }
         const nm = enrichThinkingLevels(provider, nmRaw, diagnosis);
+        const gap = missingLimitReason(nm);
+        if (gap !== undefined) {
+          skipped++; results.push(makeSkipped(provider, nm.id, gap, nm));
+          continue;
+        }
         const ops = upsertNewModelOps(provider, nm);
         if (ops.length > 0) {
           added++; operations.push(...ops); results.push(makeAdded(provider, nm.id, ops));
@@ -1205,6 +1193,7 @@ export async function runReconcile(opts: ReconcileOptions): Promise<ReconcileOut
       userModels,
       authKeys: readAuthKeys(authText),
       activeProvider: (provider) => (opts.refCatalog.modelIds(provider) ?? []).length > 0,
+      effectiveHasId: (provider, id) => (opts.effective.providers[provider] ?? []).some((m) => m.id === id),
       fetchFn: opts.fetchFn,
       signal: opts.signal,
     });

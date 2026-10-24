@@ -6,8 +6,11 @@
  * credentials the user already configured:
  *
  *  - the live /models listing decides which model ids exist;
+ *  - ids Pi already serves from its own catalog are never duplicated;
  *  - genuinely new ids are ADDED with inherited transport (api/baseUrl) and
- *    whatever metadata the protocol publishes (Gemini limits, display names);
+ *    whatever metadata the protocol publishes (Gemini limits, display names) —
+ *    only when the listing publishes BOTH limits; a model whose context window
+ *    or max output is unknown is skipped, never written with guessed numbers;
  *  - existing entries are never modified and nothing is ever removed;
  *  - providers not configured in pi's effective registry are skipped;
  *  - secrets (api keys) are used for the request only — never logged, never
@@ -25,7 +28,7 @@ import type {
   ProviderEntry,
 } from "./types.ts";
 import { isManagedProvider, protocolForApi } from "./types.ts";
-import { upsertNewModelOps, type ModelResult, type ProviderTotal } from "./doctor.ts";
+import { makeSkipped, missingLimitReason, upsertNewModelOps, type ModelResult, type ProviderTotal } from "./doctor.ts";
 
 const GENERIC_TIMEOUT_MS = 15_000;
 const GENERIC_MAX_BYTES = 2_000_000;
@@ -133,6 +136,21 @@ interface ListedModel {
   input?: ("text" | "image")[];
 }
 
+/** Positive finite number or undefined (listings often carry strings/null). */
+function positiveNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+/** Limits an OpenAI-compatible listing MAY publish. Only unambiguous field
+ *  names are read: a bare `max_tokens` describes nothing specific enough to
+ *  trust as an output ceiling and is ignored. */
+function listedLimits(row: Record<string, unknown>): { contextWindow?: number; maxTokens?: number } {
+  return {
+    contextWindow: positiveNumber(row.context_length) ?? positiveNumber(row.context_window) ?? positiveNumber(row.max_context_length),
+    maxTokens: positiveNumber(row.max_completion_tokens) ?? positiveNumber(row.max_output_tokens),
+  };
+}
+
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/;
 
 function parseListing(protocol: GenericProviderProtocol, text: string): ListedModel[] {
@@ -176,6 +194,9 @@ function parseListing(protocol: GenericProviderProtocol, text: string): ListedMo
     } else {
       if (typeof row.id === "string") id = row.id;
       if (typeof row.display_name === "string") name = row.display_name;
+      const limits = listedLimits(row);
+      contextWindow = limits.contextWindow;
+      maxTokens = limits.maxTokens;
     }
     if (!id || !ID_RE.test(id)) continue;
     out.push(name || contextWindow || maxTokens || input ? { id, name, contextWindow, maxTokens, input } : { id });
@@ -253,6 +274,8 @@ export interface GenericSyncOptions {
   readonly userModels: ModelsConfig;
   readonly authKeys: Record<string, string>;
   readonly activeProvider: (provider: string) => boolean;
+  /** True when Pi's own catalog already serves this id for the provider. */
+  readonly effectiveHasId: (provider: string, id: string) => boolean;
   readonly fetchFn: FetchFn;
   readonly signal?: AbortSignal;
 }
@@ -290,11 +313,20 @@ export async function syncGenericProviders(opts: GenericSyncOptions): Promise<Ge
       if (existing.some((e) => e.id === m.id)) {
         continue; // already configured — generic sync never rewrites entries
       }
-      const ops = upsertNewModelOps(candidate.provider, toNormalized(candidate, m));
+      if (opts.effectiveHasId(candidate.provider, m.id)) {
+        continue; // Pi's own catalog already provides it — never duplicate it
+      }
+      const nm = toNormalized(candidate, m);
+      const gap = missingLimitReason(nm);
+      if (gap !== undefined) {
+        skipped += 1;
+        results.push(makeSkipped(candidate.provider, m.id, gap, nm));
+        continue;
+      }
+      const ops = upsertNewModelOps(candidate.provider, nm);
       if (ops.length > 0) {
         added += 1;
         operations.push(...ops);
-        const nm = toNormalized(candidate, m);
         results.push({
           provider: candidate.provider,
           modelId: m.id,

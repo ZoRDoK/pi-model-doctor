@@ -16,6 +16,7 @@ const SRC_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 import {
   applyOperationsToClone,
   applyPlan,
+  upsertNewModelOps,
   auditUserModels,
   buildOperations,
   buildPlanFromSources,
@@ -859,12 +860,11 @@ describe("regression: malformed / disagreeing OpenRouter detail", () => {
     const { plan } = await planWithDetail("<html>not json</html>");
     const gptOps = plan.operations.filter((o) => o.modelId === "openai/gpt-test");
     strictEqual(gptOps.some((o) => o.path === "contextWindow"), false, "list-derived contextWindow must NOT be applied");
-    // ensureMaxTokens policy: an explicit maxTokens is ALWAYS planned; with the
-    // endpoint confirmation gone it must be the derived fallback, never the
-    // list-derived 16384.
-    const maxOps = gptOps.filter((o) => o.path === "maxTokens");
-    assertOk(maxOps.every((o) => o.source === "derived:max-tokens-fallback"), "maxTokens only from the derived fallback");
-    assertOk(maxOps.every((o) => o.after === 65536), "derived fallback value");
+    strictEqual(gptOps.some((o) => o.path === "maxTokens"), false, "no invented maxTokens");
+    // Unconfirmed limits are simply absent from the plan: the remaining ops are
+    // the unrelated fields that still have plannable evidence.
+    const limitOps = gptOps.filter((o) => o.path === "contextWindow" || o.path === "maxTokens");
+    strictEqual(limitOps.length, 0, "no limit is written without confirmed evidence");
     assertOk(plan.findings.some((f) => f.code === "detail_malformed"), "detail_malformed finding emitted");
   });
 
@@ -943,8 +943,8 @@ describe("regression: opencode-go is a real reconcile provider (update + add)", 
     const goSource: SourceResult = {
       id: "opencode-go", status: "ok", digest: "d-go", fetchedAt: nowIso(),
       models: [
-        { provider: "opencode-go", id: "glm-5.2", name: ev("GLM-5.2 GO"), contextWindow: ev(1000000) },
-        { provider: "opencode-go", id: "kimi-k3", name: ev("Kimi K3"), contextWindow: ev(256000) },
+        { provider: "opencode-go", id: "glm-5.2", name: ev("GLM-5.2 GO"), contextWindow: ev(1000000), maxTokens: ev(131072) },
+        { provider: "opencode-go", id: "kimi-k3", name: ev("Kimi K3"), contextWindow: ev(256000), maxTokens: ev(65536) },
       ],
     };
     // Pi effective opencode-go has glm-5.2 (so not added, only updated) but NOT kimi-k3 (-> added).
@@ -988,6 +988,37 @@ describe("regression: opencode-go is a real reconcile provider (update + add)", 
 });
 
 // ─── Regression: block-less providers must never receive add ops ───────────
+
+describe("regression: a new model needs published limits", () => {
+  test("reconcileAll skips a source model with no context window / max output", () => {
+    const source: SourceResult = {
+      id: "opencode-go", status: "ok", digest: "d", fetchedAt: nowIso(),
+      models: [
+        { provider: "opencode-go", id: "kimi-k3", name: ev("Kimi K3") },
+        { provider: "opencode-go", id: "kimi-k3-ctx-only", name: ev("Ctx Only"), contextWindow: ev(256000) },
+        { provider: "opencode-go", id: "kimi-k3-full", name: ev("Full"), contextWindow: ev(256000), maxTokens: ev(65536) },
+      ],
+    };
+    const user: ModelsConfig = { providers: { "opencode-go": { apiKey: "$GO_KEY", models: [] } } };
+    const { operations, report } = reconcileAll(
+      { sources: [source], findings: [], effective: { providers: { openrouter: [], opencode: [], "opencode-go": [] } } },
+      user,
+    );
+    const added = report.results.filter((r) => r.action === "added").map((r) => r.modelId);
+    deepEqual(added, ["kimi-k3-full"], "only the model with both limits is added");
+    const skipped = report.results.filter((r) => r.action === "skipped");
+    strictEqual(skipped.length, 2, "unknown-limits models are reported as skipped");
+    assertOk(skipped.find((r) => r.modelId === "kimi-k3")!.reason!.includes("context window not published"));
+    assertOk(skipped.find((r) => r.modelId === "kimi-k3-ctx-only")!.reason!.includes("max output tokens not published"));
+    const written = operations.filter((o) => o.modelId === "kimi-k3-full").map((o) => o.path);
+    assertOk(written.includes("maxTokens") && !operations.some((o) => o.path === "maxTokens" && o.after === 65536 && o.modelId !== "kimi-k3-full"));
+  });
+
+  test("upsertNewModelOps returns no ops when limits are missing", () => {
+    const nm = { provider: "opencode-go", id: "kimi-k3", name: ev("Kimi") } as never;
+    deepEqual(upsertNewModelOps("opencode-go", nm), []);
+  });
+});
 
 describe("regression: block-less providers never get add ops (allowlist refusal bug)", () => {
   test("opencode-go without a models.json block: registry-absent source model is NOT added; warning emitted", () => {
@@ -1191,6 +1222,26 @@ describe("regression: live-catalog routability probe gates ADD (union-alpha case
     };
   }
 
+  /** models.dev payload that also publishes limits for the not-yet-known ids:
+   *  a model whose limits are unpublished is never added, so the probe test
+   *  needs plannable limits to exercise the routing gate. */
+  function modelsDevWithLimits(): string {
+    const payload = JSON.parse(modelsDevFixture()) as Record<string, unknown>;
+    payload.opencode = {
+      models: {
+        "opencode/union-alpha": { id: "opencode/union-alpha", name: "Union Alpha", reasoning: true, modalities: { input: ["text"] }, limit: { context: 200000, output: 32000 } },
+        "opencode/zen-healthy-new": { id: "opencode/zen-healthy-new", name: "Zen Healthy New", modalities: { input: ["text"] }, limit: { context: 200000, output: 32000 } },
+      },
+    };
+    payload["opencode-go"] = {
+      models: {
+        "opencode-go/kimi-k3": { id: "opencode-go/kimi-k3", name: "Kimi K3", modalities: { input: ["text"] }, limit: { context: 256000, output: 65536 } },
+        "opencode-go/go-only-model": { id: "opencode-go/go-only-model", name: "Go Only", modalities: { input: ["text"] }, limit: { context: 200000, output: 32000 } },
+      },
+    };
+    return JSON.stringify(payload);
+  }
+
   async function setupProbeEnv() {
     const dir = await makeTempDir();
     const paths: DoctorPaths = {
@@ -1220,7 +1271,7 @@ describe("regression: live-catalog routability probe gates ADD (union-alpha case
         case "https://openrouter.ai/api/v1/models":
           return makeResponse(200, openRouterListFixture());
         case "https://models.dev/api.json":
-          return makeResponse(200, modelsDevFixture());
+          return makeResponse(200, modelsDevWithLimits());
         case "https://opencode.ai/zen/v1/models":
           return makeResponse(200, zenCatalogWithUnionFixture());
         case "https://opencode.ai/zen/go/v1/models":

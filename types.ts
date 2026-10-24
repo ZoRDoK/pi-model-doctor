@@ -266,7 +266,8 @@ export interface PatchOperation {
 
 /** Effective pi catalog snapshot for the managed providers (read-only). */
 export interface EffectiveSnapshot {
-  readonly providers: Readonly<Record<ManagedProvider, readonly NormalizedModel[]>>;
+  /** Every provider Pi serves (built-in + models.json), keyed by provider id. */
+  readonly providers: Readonly<Record<string, readonly NormalizedModel[]>>;
 }
 
 /** Full diagnosis produced by `check` / `plan`. */
