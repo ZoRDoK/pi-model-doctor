@@ -1,0 +1,12 @@
+# Gitleaks config: default rules + allowlist for obvious test fixtures.
+# Fixture secrets are clearly marked (FIXTURE/TEST) and never valid.
+[allowlist]
+  description = "test fixtures with obviously fake keys"
+  paths = [
+    '''(^|/)test/.*.ts$''',
+  ]
+  regexes = [
+    '''FIXTURE''',
+    '''TEST-KEY''',
+    '''sk-go2-FIXTURE''',
+  ]
