@@ -61,14 +61,15 @@ export function backupStamp(now: () => number = Date.now): string {
   );
 }
 
-/** Hooks injected by tests to simulate faults at specific points. */
+/** Fault-injection hooks; awaited, so a hook that writes must finish before the
+ *  next step runs. */
 export interface WriteHooks {
-  /** After temp write+fsync, before rename. Throw to simulate a rename-time fault. */
-  beforeRename?: () => void;
-  /** After a successful rename, before verify. Throw/corrupt to simulate a verify fault. */
-  afterRename?: (target: string) => void;
-  /** Inside rollback. Throw to simulate rollback failure. */
-  onRollback?: () => void;
+  /** After temp write + fsync, before rename. */
+  beforeRename?: () => void | Promise<void>;
+  /** After a successful rename, before verify. */
+  afterRename?: (target: string) => void | Promise<void>;
+  /** Inside rollback. */
+  onRollback?: () => void | Promise<void>;
 }
 
 export interface AtomicWriteOptions {
@@ -107,7 +108,7 @@ export async function atomicWriteFile(
     // Fault-injection point FIRST, so any mutation it introduces is observed
     // by the CAS gate below (closing the CAS->rename TOCTOU window: the CAS
     // re-read is the last step before rename, with no observable gap).
-    options?.hooks?.beforeRename?.();
+    await options?.hooks?.beforeRename?.();
     // CAS: terminal gate immediately before rename. Re-read the target bytes
     // here (not earlier) and refuse to clobber a target whose bytes changed
     // since the caller's snapshot. A concurrent writer (or a fault hook that
@@ -252,7 +253,7 @@ export async function safeWriteWithBackup(
 
   // Post-write verify (hooks.afterRename may corrupt to simulate a fault).
   try {
-    if (hooks?.afterRename) hooks.afterRename(targetPath);
+    await hooks?.afterRename?.(targetPath);
     const reread = await readRaw(targetPath);
     if (!buffersEqual(reread.bytes, newBytes)) {
       throw new Error("post-write verification mismatch");
@@ -303,7 +304,7 @@ async function tryRollback(
   expectedHash?: string,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   try {
-    if (hooks?.onRollback) hooks.onRollback();
+    await hooks?.onRollback?.();
     const opts: AtomicWriteOptions = expectedHash !== undefined ? { expectedHash, hooks } : { hooks };
     await atomicWriteFile(targetPath, goodBytes, opts);
     const reread = await readRaw(targetPath);
